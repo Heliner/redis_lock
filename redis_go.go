@@ -86,7 +86,7 @@ func (l *Lock) registerScripts() {
 	}
 }
 
-func (l *Lock) acquire(blocking bool, blockingTimeout time.Duration, token string) bool {
+func (l *Lock) Acquire(blocking bool, blockingTimeout time.Duration, token string) bool {
 	sleep := l.sleep
 	if token == "" {
 		token = uuid.New().String()
@@ -127,13 +127,13 @@ func (l *Lock) doAcquire(token string) bool {
 	return acquired
 }
 
-func (l *Lock) locked() bool {
+func (l *Lock) Locked() bool {
 	cmd := l.redis.Get(l.redis.Context(), l.name)
 	_, err := cmd.Result()
 	return err == nil
 }
 
-func (l *Lock) owned() bool {
+func (l *Lock) Owned() bool {
 	storedToken, err := l.redis.Get(l.redis.Context(), l.name).Result()
 	if err != nil {
 		return false
@@ -145,7 +145,7 @@ func (l *Lock) owned() bool {
 	return storedToken == token
 }
 
-func (l *Lock) release() error {
+func (l *Lock) Release() error {
 	expectedToken, ok := l.local.Load(l.threadIdGen())
 	if !ok {
 		return fmt.Errorf("Cannot release an unlocked lock")
@@ -166,7 +166,7 @@ func (l *Lock) doRelease(expectedToken string) error {
 	return nil
 }
 
-func (l *Lock) extend(additionalTime time.Duration, replaceTTL bool) error {
+func (l *Lock) Extend(additionalTime time.Duration, replaceTTL bool) error {
 	token, ok := l.local.Load(l.threadIdGen())
 	if !ok {
 		return fmt.Errorf("Cannot extend an unlocked lock")
@@ -199,7 +199,7 @@ func (l *Lock) doExtend(additionalTime time.Duration, replaceTTL bool, token str
 	return nil
 }
 
-func (l *Lock) reacquire() error {
+func (l *Lock) Reacquire() error {
 	token, ok := l.local.Load(l.threadIdGen())
 	if !ok {
 		return fmt.Errorf("Cannot reacquire an unlocked lock")
