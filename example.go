@@ -1,23 +1,5 @@
-# redis_lock
-redis_lock for golang
+package main
 
-## Getting started
-
-### getting redis_lock
-With Go module support, simply add the following import
-
-import "github.com/Heliner/redis_lock"
-to your code, and then go [build|run|test] will automatically fetch the necessary dependencies.
-
-Otherwise, run the following Go command to install the gin package:
-
-```shell
-$ go get -u github.com/Heliner/redis_lock
-```
-
-### Running redis_lock
-
-```golang
 import (
 	"fmt"
 	"time"
@@ -38,7 +20,7 @@ func main() {
 	lock := NewLock(redisClient, "my-lock", 10, 1, true, 1, "token-foo")
 
 	// lock.acquire
-	acquired := lock.Acquire(false, "")
+	acquired := lock.Acquire(false)
 
 	if acquired {
 		fmt.Println("Lock acquired successfully")
@@ -59,11 +41,3 @@ func main() {
 		fmt.Println("Failed to acquire lock")
 	}
 }
-
-```
-
-## Contributing
-
-Gin is the work of hundreds of contributors. We appreciate your help!
-
-Please see [CONTRIBUTING](CONTRIBUTING.md) for details on submitting patches and the contribution workflow.

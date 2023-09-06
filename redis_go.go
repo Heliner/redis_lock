@@ -2,40 +2,34 @@ package main
 
 import (
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/go-redis/redis/v8"
-	"github.com/google/uuid"
 )
 
 type Lock struct {
 	redis           *redis.Client
-	name            string
+	name            string // lock name
 	timeout         time.Duration
-	sleep           time.Duration
-	blocking        bool
+	tryInternal     time.Duration
+	blocking        bool // is blocking if not get lock
 	blockingTimeout time.Duration
-	threadLocal     bool
-	threadIdGen     func() string
-	local           *sync.Map
+	token           string // token
 	luaRelease      *redis.Script
 	luaExtend       *redis.Script
 	luaReacquire    *redis.Script
 }
 
-func NewLock(redis *redis.Client, name string, timeout time.Duration, sleep time.Duration,
-	blocking bool, blockingTimeout time.Duration, threadLocal bool, threadIdGen func() string) *Lock {
+func NewLock(redis *redis.Client, name string, timeout time.Duration, tryInternal time.Duration,
+	blocking bool, blockingTimeout time.Duration, token string) *Lock {
 	l := &Lock{
 		redis:           redis,
 		name:            name,
 		timeout:         timeout,
-		sleep:           sleep,
+		tryInternal:     tryInternal,
 		blocking:        blocking,
 		blockingTimeout: blockingTimeout,
-		threadLocal:     threadLocal,
-		local:           &sync.Map{},
-		threadIdGen:     threadIdGen,
+		token:           token,
 	}
 	l.registerScripts()
 	return l
@@ -86,21 +80,14 @@ func (l *Lock) registerScripts() {
 	}
 }
 
-func (l *Lock) Acquire(blocking bool, blockingTimeout time.Duration, token string) bool {
-	sleep := l.sleep
-	if token == "" {
-		token = uuid.New().String()
-	}
-	if blockingTimeout == 0 {
-		blockingTimeout = l.blockingTimeout
-	}
+func (l *Lock) Acquire(blocking bool) bool {
+	sleep := l.tryInternal
 	stopTryingAt := time.Time{}
-	if blockingTimeout > 0 {
-		stopTryingAt = time.Now().Add(blockingTimeout)
+	if l.blockingTimeout > 0 {
+		stopTryingAt = time.Now().Add(l.blockingTimeout)
 	}
 	for {
-		if l.doAcquire(token) {
-			l.local.Store(l.threadIdGen(), token)
+		if l.doAcquire() {
 			return true
 		}
 		if !blocking {
@@ -114,12 +101,8 @@ func (l *Lock) Acquire(blocking bool, blockingTimeout time.Duration, token strin
 	}
 }
 
-func (l *Lock) doAcquire(token string) bool {
-	var timeout time.Duration
-	if l.timeout != 0 {
-		timeout = l.timeout * time.Second
-	}
-	cmd := l.redis.SetNX(l.redis.Context(), l.name, token, timeout)
+func (l *Lock) doAcquire() bool {
+	cmd := l.redis.SetNX(l.redis.Context(), l.name, l.token, l.timeout)
 	acquired, err := cmd.Result()
 	if err != nil {
 		return false
@@ -127,35 +110,8 @@ func (l *Lock) doAcquire(token string) bool {
 	return acquired
 }
 
-func (l *Lock) Locked() bool {
-	cmd := l.redis.Get(l.redis.Context(), l.name)
-	_, err := cmd.Result()
-	return err == nil
-}
-
-func (l *Lock) Owned() bool {
-	storedToken, err := l.redis.Get(l.redis.Context(), l.name).Result()
-	if err != nil {
-		return false
-	}
-	token, ok := l.local.Load(l.threadIdGen())
-	if !ok {
-		return false
-	}
-	return storedToken == token
-}
-
 func (l *Lock) Release() error {
-	expectedToken, ok := l.local.Load(l.threadIdGen())
-	if !ok {
-		return fmt.Errorf("Cannot release an unlocked lock")
-	}
-	l.local.Delete(l.threadIdGen())
-	return l.doRelease(expectedToken.(string))
-}
-
-func (l *Lock) doRelease(expectedToken string) error {
-	cmd := l.luaRelease.Run(l.redis.Context(), l.redis, []string{l.name}, expectedToken)
+	cmd := l.luaRelease.Run(l.redis.Context(), l.redis, []string{l.name}, l.token)
 	released, err := cmd.Int64()
 	if err != nil {
 		return err
@@ -164,65 +120,4 @@ func (l *Lock) doRelease(expectedToken string) error {
 		return fmt.Errorf("Cannot release a lock that's no longer owned")
 	}
 	return nil
-}
-
-func (l *Lock) Extend(additionalTime time.Duration, replaceTTL bool) error {
-	token, ok := l.local.Load(l.threadIdGen())
-	if !ok {
-		return fmt.Errorf("Cannot extend an unlocked lock")
-	}
-	if l.timeout == 0 {
-		return fmt.Errorf("Cannot extend a lock with no timeout")
-	}
-	return l.doExtend(additionalTime, replaceTTL, token.(string))
-}
-
-func (l *Lock) doExtend(additionalTime time.Duration, replaceTTL bool, token string) error {
-	var additionalTimeMs int64
-	if additionalTime > 0 {
-		additionalTimeMs = additionalTime.Milliseconds()
-	}
-	var replaceTTLStr string
-	if replaceTTL {
-		replaceTTLStr = "1"
-	} else {
-		replaceTTLStr = "0"
-	}
-	cmd := l.luaExtend.Run(l.redis.Context(), l.redis, []string{l.name}, token, additionalTimeMs, replaceTTLStr)
-	extended, err := cmd.Int64()
-	if err != nil {
-		return err
-	}
-	if extended == 0 {
-		return fmt.Errorf("Cannot extend a lock that's no longer owned")
-	}
-	return nil
-}
-
-func (l *Lock) Reacquire() error {
-	token, ok := l.local.Load(l.threadIdGen())
-	if !ok {
-		return fmt.Errorf("Cannot reacquire an unlocked lock")
-	}
-	if l.timeout == 0 {
-		return fmt.Errorf("Cannot reacquire a lock with no timeout")
-	}
-	return l.doReacquire(token.(string))
-}
-
-func (l *Lock) doReacquire(token string) error {
-	timeout := l.timeout * time.Second
-	cmd := l.luaReacquire.Run(l.redis.Context(), l.redis, []string{l.name}, token, timeout.Milliseconds())
-	reacquired, err := cmd.Int64()
-	if err != nil {
-		return err
-	}
-	if reacquired == 0 {
-		return fmt.Errorf("Cannot reacquire a lock that's no longer owned")
-	}
-	return nil
-}
-
-func genThreadID() string {
-	return "foo"
 }
